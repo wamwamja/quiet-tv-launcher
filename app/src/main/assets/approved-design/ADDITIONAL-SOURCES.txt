@@ -1,0 +1,4 @@
+Same Lucide family / ISC license, stroke 1.75 as approved. Additional installed system apps:
+https://github.com/lucide-icons/lucide/blob/main/icons/calendar-days.svg
+https://github.com/lucide-icons/lucide/blob/main/icons/timer.svg
+https://github.com/lucide-icons/lucide/blob/main/icons/shopping-bag.svg

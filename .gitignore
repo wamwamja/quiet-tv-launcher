@@ -1,0 +1,18 @@
+# Local build state and SDK paths
+.gradle/
+**/build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+# Signing material / machine-specific settings
+*.jks
+*.keystore
+key.properties
+.env
+.env.*
+# Device captures and backups
+backups/
+logs/
+*.apk
+*.aab
