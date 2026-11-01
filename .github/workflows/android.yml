@@ -12,5 +12,7 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
       - run: ./gradlew --no-daemon lintRelease assembleRelease testReleaseUnitTest -PlauncherApplicationId=com.ts.launcher
