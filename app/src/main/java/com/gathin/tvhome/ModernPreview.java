@@ -101,7 +101,7 @@ final class ModernPreview extends FrameLayout {
             paint.setStyle(Paint.Style.FILL);paint.setColor(DesignSpec.BACKGROUND);c.drawPath(outside,paint);
             if(ModernPreview.this.hasFocus()){
                 float footerTop=Math.round(getWidth()*9f/16f);
-                ClearWaterDrawable.drawWater(c,new RectF(0,footerTop,getWidth(),getHeight()),r,unit,paint,new Path());
+                ClearWaterDrawable.drawFooter(c,new RectF(0,footerTop,getWidth(),getHeight()),r,unit,paint,new Path());
                 paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(unit);
                 paint.setShader(new LinearGradient(0,0,getWidth()*.65f,0,new int[]{0x00effaff,0x9eeffaff,0x30def2ff,0x00def2ff},new float[]{0,.2f,.55f,1},Shader.TileMode.CLAMP));
                 c.save();c.clipRect(0,0,getWidth(),getHeight()*.35f);RectF reflection=new RectF(bounds);reflection.inset(unit,unit);c.drawRoundRect(reflection,r,r,paint);c.restore();paint.setShader(null);paint.setStyle(Paint.Style.FILL);

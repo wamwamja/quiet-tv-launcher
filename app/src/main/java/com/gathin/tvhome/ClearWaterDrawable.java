@@ -19,7 +19,17 @@ final class ClearWaterDrawable extends Drawable {
         drawWater(canvas,box,radius,unit,paint,outline);
     }
     static void drawWater(Canvas canvas,RectF box,float radius,float unit,Paint paint,Path outline){
-        outline.reset();outline.addRoundRect(box,radius,radius,Path.Direction.CW);canvas.save();canvas.clipPath(outline);
+        drawWater(canvas,box,radius,unit,paint,outline,false);
+    }
+    /** A TV footer joins the picture along a straight edge; only its bottom corners are rounded. */
+    static void drawFooter(Canvas canvas,RectF box,float radius,float unit,Paint paint,Path outline){
+        drawWater(canvas,box,radius,unit,paint,outline,true);
+    }
+    private static void drawWater(Canvas canvas,RectF box,float radius,float unit,Paint paint,Path outline,boolean footer){
+        outline.reset();
+        if(footer)outline.addRoundRect(box,new float[]{0,0,0,0,radius,radius,radius,radius},Path.Direction.CW);
+        else outline.addRoundRect(box,radius,radius,Path.Direction.CW);
+        canvas.save();canvas.clipPath(outline);
         paint.setStyle(Paint.Style.FILL);paint.setColor(Color.WHITE);
         paint.setShader(new LinearGradient(0,box.top,0,box.bottom,new int[]{0x13c3d7ea,0x06b6cde0,0x14050e17,0x1abddaef},new float[]{0,.42f,.75f,1},Shader.TileMode.CLAMP));
         canvas.drawRect(box,paint);
@@ -28,7 +38,8 @@ final class ClearWaterDrawable extends Drawable {
         paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(unit*.85f);
         paint.setShader(new LinearGradient(box.left,0,box.right,0,new int[]{0x00effaff,0x94effaff,0x40effaff,0x00effaff},new float[]{0,.22f,.48f,.73f},Shader.TileMode.CLAMP));
         RectF inner=new RectF(box);inner.inset(1.2f*unit,1.1f*unit);
-        canvas.save();canvas.clipRect(box.left,box.top,box.right,box.top+Math.min(radius,box.height()*.28f));canvas.drawRoundRect(inner,radius,radius,paint);canvas.restore();
+        // The shared seam is not an exposed glass edge: omit the upper curved reflection too.
+        if(!footer){canvas.save();canvas.clipRect(box.left,box.top,box.right,box.top+Math.min(radius,box.height()*.28f));canvas.drawRoundRect(inner,radius,radius,paint);canvas.restore();}
         paint.setShader(new LinearGradient(box.left,0,box.right,0,new int[]{0x00d1edff,0x00d1edff,0x59d1edff,0x00d1edff},new float[]{0,.25f,.78f,1},Shader.TileMode.CLAMP));
         canvas.save();canvas.clipRect(box.left,box.bottom-Math.min(radius,box.height()*.28f),box.right,box.bottom);canvas.drawRoundRect(inner,radius,radius,paint);canvas.restore();
         paint.setShader(null);paint.setStyle(Paint.Style.FILL);canvas.restore();
