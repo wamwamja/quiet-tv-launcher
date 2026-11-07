@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.2.1
+
+- Restore missing remote focus after resume, window focus return, and dialog dismissal without rebuilding the HDMI preview.
+- Recover missing focus on a directional key, preserving valid selections and active dialogs.
+- Cancel pending long presses when window focus is lost; release dismissed dialog key handlers.
+- Defer package-change refreshes until Home owns the window, avoiding background or dialog-time rebuilds.
+
 ## v0.1.0-baseline — 2026-11-01
 
 首次将已确认的定制启动器整理为独立源码仓库。

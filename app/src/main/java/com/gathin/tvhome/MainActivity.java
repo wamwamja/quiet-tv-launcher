@@ -36,6 +36,37 @@ public class MainActivity extends Activity {
     private int width,height;
     private String returnPackage;
     private Dialog modal;
+    private View lastFocused;
+    private boolean destroyed,appsDirty;
+    private final Runnable restoreFocusTask=this::restoreFocus;
+    private final ViewTreeObserver.OnGlobalFocusChangeListener focusTracker=(oldView,newView)->{
+        if(validHomeFocus(newView))lastFocused=newView;
+    };
+    private boolean validHomeFocus(View view){
+        if(root==null||view==null||!view.isAttachedToWindow()||!view.isShown()||!view.isEnabled()||!view.isFocusable())return false;
+        ViewParent parent=view.getParent();
+        while(parent instanceof View){if(parent==root)return true;parent=parent.getParent();}
+        return false;
+    }
+    private void scheduleFocusRestore(){
+        handler.removeCallbacks(restoreFocusTask);
+        if(!destroyed&&resumed&&root!=null)handler.post(restoreFocusTask);
+    }
+    private boolean restoreFocus(){
+        if(destroyed||!resumed||root==null||!hasWindowFocus()||(modal!=null&&modal.isShowing()))return false;
+        if(appsDirty){appsDirty=false;loadApps();render(library);}
+        if(validHomeFocus(getCurrentFocus()))return false;
+        View target=validHomeFocus(lastFocused)?lastFocused:library?(tileViews.isEmpty()?back:tileViews.get(0)):preview;
+        if(!validHomeFocus(target))return false;
+        // A touch-driven system panel can leave the window in touch mode. Do not rebuild the page.
+        boolean restored=root.isInTouchMode()?target.requestFocusFromTouch():target.requestFocus();
+        if(restored)android.util.Log.i("HomeFocus","restored "+(library?"library":"home"));
+        return restored;
+    }
+    @Override public void onWindowFocusChanged(boolean hasFocus){
+        super.onWindowFocusChanged(hasFocus);
+        if(hasFocus)scheduleFocusRestore();else{cancelHolds();handler.removeCallbacks(restoreFocusTask);}
+    }
     private final Map<String,ImageView> sourceRows=new HashMap<>();
     private android.content.SharedPreferences prefs;
     private final Runnable ticker=new Runnable(){public void run(){if(clock!=null)clock.setText(new SimpleDateFormat("HH:mm",Locale.CHINA).format(new Date()));handler.postDelayed(this,15000);}};
@@ -45,7 +76,7 @@ public class MainActivity extends Activity {
         @Override public void onInputRemoved(String id){if(preview!=null)preview.inputChanged(id);refreshSourceIndicators();}
         @Override public void onInputUpdated(String id){if(preview!=null)preview.inputChanged(id);refreshSourceIndicators();}
     };
-    private final BroadcastReceiver packages=new BroadcastReceiver(){public void onReceive(Context c,Intent i){loadApps();if(modal==null)render(library);}};
+    private final BroadcastReceiver packages=new BroadcastReceiver(){public void onReceive(Context c,Intent i){appsDirty=true;scheduleFocusRestore();}};
     @Override public void onCreate(Bundle b){super.onCreate(b);DesignAssets.initialize(this);
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,WindowManager.LayoutParams.FLAG_FULLSCREEN);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN|View.SYSTEM_UI_FLAG_HIDE_NAVIGATION|View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
@@ -54,12 +85,13 @@ public class MainActivity extends Activity {
         IntentFilter filter=new IntentFilter(Intent.ACTION_PACKAGE_ADDED);filter.addAction(Intent.ACTION_PACKAGE_REMOVED);filter.addAction(Intent.ACTION_PACKAGE_CHANGED);filter.addDataScheme("package");
         if(Build.VERSION.SDK_INT>=33)registerReceiver(packages,filter,Context.RECEIVER_EXPORTED);else registerReceiver(packages,filter);
         loadApps();root=new FrameLayout(this);root.setBackgroundColor(DesignSpec.BACKGROUND);setContentView(root);
+        root.getViewTreeObserver().addOnGlobalFocusChangeListener(focusTracker);
         root.addOnLayoutChangeListener((v,l,t,r,bt,ol,ot,or,ob)->{if(width!=r-l||height!=bt-t){width=r-l;height=bt-t;unit=Math.min(width/960f,height/540f);root.post(()->render(library));}});
         handler.post(ticker);
     }
-    @Override protected void onResume(){super.onResume();resumed=true;if(preview!=null&&!library)preview.resume();}
-    @Override protected void onPause(){resumed=false;cancelHolds();if(preview!=null)preview.pause();super.onPause();}
-    @Override protected void onDestroy(){handler.removeCallbacksAndMessages(null);if(sources.manager!=null)sources.manager.unregisterCallback(inputEvents);unregisterReceiver(packages);super.onDestroy();}
+    @Override protected void onResume(){super.onResume();resumed=true;if(preview!=null&&!library)preview.resume();scheduleFocusRestore();}
+    @Override protected void onPause(){resumed=false;handler.removeCallbacks(restoreFocusTask);cancelHolds();dismissModal();if(preview!=null)preview.pause();super.onPause();}
+    @Override protected void onDestroy(){destroyed=true;dismissModal();if(root!=null&&root.getViewTreeObserver().isAlive())root.getViewTreeObserver().removeOnGlobalFocusChangeListener(focusTracker);handler.removeCallbacksAndMessages(null);if(sources.manager!=null)sources.manager.unregisterCallback(inputEvents);unregisterReceiver(packages);super.onDestroy();}
     @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);dismissModal();
         // HOME reuses the laid-out card and SurfaceView; rebuilding the whole root flashes the page.
         if(library||preview==null)render(false);
@@ -74,9 +106,9 @@ public class MainActivity extends Activity {
     private TextView label(String text,float size,int color){TextView t=new TextView(this);t.setText(text);t.setTextSize(0,u(size));t.setTextColor(color);t.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));t.setGravity(Gravity.CENTER_VERTICAL);t.setIncludeFontPadding(false);return t;}
     private void place(View v,float x,float y,float w,float h){FrameLayout.LayoutParams p=new FrameLayout.LayoutParams(u(w),u(h));p.leftMargin=u(x)+(width-u(960))/2;p.topMargin=u(y)+(height-u(540))/2;root.addView(v,p);}
     private TextView button(String text,Runnable click,Runnable hold){TextView t=label(text,18.24f,DesignSpec.TEXT);t.setGravity(Gravity.CENTER);t.setFocusable(true);t.setId(View.generateViewId());t.setPadding(u(10.56f),0,u(10.56f),0);t.setBackground(bg(0xff252e39,false));t.setOnFocusChangeListener((v,f)->{v.setBackground(bg(f?DesignSpec.FOCUS:0xff252e39,f));if(f&&helper!=null)helper.setText(hold==null?"选择":"选择 · 长按管理");});bind(t,click,hold);return t;}
-    private void render(boolean showLibrary){if(width==0)return;cancelHolds();holds.clear();if(preview!=null)preview.pause();root.removeAllViews();tileViews.clear();library=showLibrary;preview=null;
+    private void render(boolean showLibrary){if(width==0)return;cancelHolds();holds.clear();if(preview!=null)preview.pause();lastFocused=null;root.removeAllViews();tileViews.clear();library=showLibrary;preview=null;
         if(library)renderLibrary();else renderHome();
-        clock.setText(new SimpleDateFormat("HH:mm",Locale.CHINA).format(new Date()));
+        clock.setText(new SimpleDateFormat("HH:mm",Locale.CHINA).format(new Date()));scheduleFocusRestore();
     }
     private void renderHome(){
         clock=label("",44.64f,DesignSpec.TEXT);clock.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));clock.setLetterSpacing(-.043f);place(clock,38.4f,23.73f,112.3f,52.97f);
@@ -218,7 +250,10 @@ public class MainActivity extends Activity {
         int scrollHeight=u(Math.min(274,rows.size()*40.58f+Math.max(0,rows.size()-1)*6.24f));panel.addView(scroll,new LinearLayout.LayoutParams(-1,scrollHeight));
         DesignHelp tip=new DesignHelp(this,unit,10.08f,0xff93a3b5);tip.setText("确认选择 · 返回取消");LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(-1,u(20.16f));hp.topMargin=u(15.36f);panel.addView(tip,hp);
         d.setOnKeyListener((dialog,key,event)->handleMenuKey(event));
-        d.setContentView(panel);d.setOnDismissListener(x->{if(modal==d){modal=null;sourceRows.clear();}cancelHolds();if(Build.VERSION.SDK_INT>=31)root.setRenderEffect(null);root.post(()->{if(helper!=null)helper.setText(library?"打开 · 长按管理":preview!=null&&preview.hasFocus()?"看电视 · 长按切换信号源":"选择");});});
+        d.setContentView(panel);d.setOnDismissListener(x->{
+            // Dialog rows belong to a separate window. Release their Hold objects when it closes.
+            for(java.util.Iterator<Hold> it=holds.iterator();it.hasNext();){Hold h=it.next();if(buttons.contains(h.view)){h.cancel();it.remove();}}
+            scheduleFocusRestore();if(modal==d){modal=null;sourceRows.clear();}cancelHolds();if(Build.VERSION.SDK_INT>=31)root.setRenderEffect(null);root.post(()->{if(helper!=null)helper.setText(library?"打开 · 长按管理":preview!=null&&preview.hasFocus()?"看电视 · 长按切换信号源":"选择");});});
         Window w=d.getWindow();if(w!=null){w.setBackgroundDrawableResource(android.R.color.transparent);w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);w.setDimAmount(.66f);}
         if(Build.VERSION.SDK_INT>=31)root.setRenderEffect(RenderEffect.createBlurEffect(u(5.76f),u(5.76f),Shader.TileMode.CLAMP));
         d.show();w.setLayout(u(422.4f),-2);buttons.get(Math.min(initial,buttons.size()-1)).requestFocus();
@@ -253,7 +288,11 @@ public class MainActivity extends Activity {
     }
     @Override public boolean dispatchKeyEvent(KeyEvent e){
         if(handleMenuKey(e))return true;
-        if(modal!=null)return super.dispatchKeyEvent(e);
+        if(modal!=null&&modal.isShowing())return super.dispatchKeyEvent(e);
+        int key=e.getKeyCode();
+        boolean navigation=key==KeyEvent.KEYCODE_DPAD_UP||key==KeyEvent.KEYCODE_DPAD_DOWN||key==KeyEvent.KEYCODE_DPAD_LEFT||key==KeyEvent.KEYCODE_DPAD_RIGHT;
+        // Recover on the first arrow without immediately moving away from the restored card.
+        if(navigation&&e.getAction()==KeyEvent.ACTION_DOWN&&restoreFocus())return true;
         if(library&&(e.getKeyCode()==KeyEvent.KEYCODE_DPAD_DOWN||e.getKeyCode()==KeyEvent.KEYCODE_DPAD_UP)){
             int index=tileViews.indexOf(getCurrentFocus());boolean next=e.getKeyCode()==KeyEvent.KEYCODE_DPAD_DOWN&&index>=5&&page*10+10<apps.size();boolean prev=e.getKeyCode()==KeyEvent.KEYCODE_DPAD_UP&&index>=0&&index<5&&page>0;
             if(next||prev){if(e.getAction()==KeyEvent.ACTION_DOWN&&e.getRepeatCount()==0){int col=index%5;page+=next?1:-1;returnPackage=null;render(true);int focus=Math.min(tileViews.size()-1,next?col:col+5);if(focus>=0)tileViews.get(focus).requestFocus();}return true;}
