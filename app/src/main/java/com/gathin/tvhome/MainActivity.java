@@ -22,7 +22,14 @@ public class MainActivity extends Activity {
     private final Handler handler=new Handler(Looper.getMainLooper());
     private final List<App> apps=new ArrayList<>();
     private final List<String> pinned=new ArrayList<>();
-    private final List<View> tileViews=new ArrayList<>();
+    private List<View> tileViews=new ArrayList<>();
+    private final List<View> homeTiles=new ArrayList<>(),libraryTiles=new ArrayList<>();
+    private FrameLayout homeLayer,libraryLayer,buildingLayer,libraryGrid;
+    private DesignHelp homeHelper,libraryHelper;
+    private TextView homeClock,libraryClock;
+    private String homeFocusTag="tv",libraryFocusTag;
+    private int firstLibraryRow;
+    private boolean rebuilding;
     private final List<Hold> holds=new ArrayList<>();
     private FrameLayout root;
     private ModernPreview preview;
@@ -31,16 +38,19 @@ public class MainActivity extends Activity {
     private DesignHelp helper;
     private View wifi,settings,libraryButton,back;
     private boolean library,resumed;
-    private int page;
+
     private float unit=1;
     private int width,height;
-    private String returnPackage;
     private Dialog modal;
     private View lastFocused;
+    private final BoundaryFeedback boundaryFeedback=new BoundaryFeedback();
     private boolean destroyed,appsDirty;
     private final Runnable restoreFocusTask=this::restoreFocus;
     private final ViewTreeObserver.OnGlobalFocusChangeListener focusTracker=(oldView,newView)->{
-        if(validHomeFocus(newView))lastFocused=newView;
+        if(validHomeFocus(newView)&&!rebuilding){lastFocused=newView;
+            if(newView!=libraryButton&&newView!=back&&newView.getTag() instanceof String){if(library)libraryFocusTag=(String)newView.getTag();else homeFocusTag=(String)newView.getTag();}
+            if(library)revealLibrary(newView,true);
+        }
     };
     private boolean validHomeFocus(View view){
         if(root==null||view==null||!view.isAttachedToWindow()||!view.isShown()||!view.isEnabled()||!view.isFocusable())return false;
@@ -65,7 +75,7 @@ public class MainActivity extends Activity {
     }
     @Override public void onWindowFocusChanged(boolean hasFocus){
         super.onWindowFocusChanged(hasFocus);
-        if(hasFocus)scheduleFocusRestore();else{cancelHolds();handler.removeCallbacks(restoreFocusTask);}
+        if(hasFocus)scheduleFocusRestore();else{boundaryFeedback.cancel();cancelHolds();handler.removeCallbacks(restoreFocusTask);}
     }
     private final Map<String,ImageView> sourceRows=new HashMap<>();
     private android.content.SharedPreferences prefs;
@@ -90,77 +100,112 @@ public class MainActivity extends Activity {
         handler.post(ticker);
     }
     @Override protected void onResume(){super.onResume();resumed=true;if(preview!=null&&!library)preview.resume();scheduleFocusRestore();}
-    @Override protected void onPause(){resumed=false;handler.removeCallbacks(restoreFocusTask);cancelHolds();dismissModal();if(preview!=null)preview.pause();super.onPause();}
+    @Override protected void onPause(){resumed=false;boundaryFeedback.cancel();handler.removeCallbacks(restoreFocusTask);cancelHolds();dismissModal();if(preview!=null)preview.pause();super.onPause();}
     @Override protected void onDestroy(){destroyed=true;dismissModal();if(root!=null&&root.getViewTreeObserver().isAlive())root.getViewTreeObserver().removeOnGlobalFocusChangeListener(focusTracker);handler.removeCallbacksAndMessages(null);if(sources.manager!=null)sources.manager.unregisterCallback(inputEvents);unregisterReceiver(packages);super.onDestroy();}
     @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);dismissModal();
         // HOME reuses the laid-out card and SurfaceView; rebuilding the whole root flashes the page.
-        if(library||preview==null)render(false);
+        if(preview==null)render(false);else if(library)showPage(false,true);
         else {preview.requestFocus();if(resumed)preview.resume();}
         root.post(()->{
-        if(ACTION_APP_LIBRARY.equals(intent.getAction()))render(true);
+        if(ACTION_APP_LIBRARY.equals(intent.getAction()))showPage(true,true);
         else if(ACTION_VIEW_INPUTS.equals(intent.getAction()))showSources();
         else if(ACTION_LAUNCHER_SETTINGS.equals(intent.getAction()))showSettings();
     });}
     private int u(float x){return Math.round(x*unit);}
     private GradientDrawable bg(int color,boolean focused){GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(u(DesignSpec.CORNER));return d;}
     private TextView label(String text,float size,int color){TextView t=new TextView(this);t.setText(text);t.setTextSize(0,u(size));t.setTextColor(color);t.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));t.setGravity(Gravity.CENTER_VERTICAL);t.setIncludeFontPadding(false);return t;}
-    private void place(View v,float x,float y,float w,float h){FrameLayout.LayoutParams p=new FrameLayout.LayoutParams(u(w),u(h));p.leftMargin=u(x)+(width-u(960))/2;p.topMargin=u(y)+(height-u(540))/2;root.addView(v,p);}
-    private TextView button(String text,Runnable click,Runnable hold){TextView t=label(text,18.24f,DesignSpec.TEXT);t.setGravity(Gravity.CENTER);t.setFocusable(true);t.setId(View.generateViewId());t.setPadding(u(10.56f),0,u(10.56f),0);t.setBackground(bg(0xff252e39,false));t.setOnFocusChangeListener((v,f)->{v.setBackground(bg(f?DesignSpec.FOCUS:0xff252e39,f));if(f&&helper!=null)helper.setText(hold==null?"选择":"选择 · 长按管理");});bind(t,click,hold);return t;}
-    private void render(boolean showLibrary){if(width==0)return;cancelHolds();holds.clear();if(preview!=null)preview.pause();lastFocused=null;root.removeAllViews();tileViews.clear();library=showLibrary;preview=null;
-        if(library)renderLibrary();else renderHome();
-        clock.setText(new SimpleDateFormat("HH:mm",Locale.CHINA).format(new Date()));scheduleFocusRestore();
+    private void place(View v,float x,float y,float w,float h){FrameLayout.LayoutParams p=new FrameLayout.LayoutParams(u(w),u(h));p.leftMargin=u(x)+(width-u(960))/2;p.topMargin=u(y)+(height-u(540))/2;buildingLayer.addView(v,p);}
+    private TextView button(String text,Runnable click,Runnable hold){TextView t=label(text,18.24f,DesignSpec.TEXT);t.setGravity(Gravity.CENTER);t.setFocusable(true);t.setId(View.generateViewId());t.setPadding(u(10.56f),0,u(10.56f),0);t.setBackground(new ClearWaterDrawable(unit,DesignSpec.CORNER,0x0eb9cfe6));t.setOnFocusChangeListener((v,f)->{if(f&&helper!=null)helper.setText(hold==null?"选择":"选择 · 长按管理");});bind(t,click,hold);return t;}
+    private void render(boolean showLibrary){
+        if(width==0)return;rebuilding=true;boundaryFeedback.cancel();cancelHolds();holds.clear();lastFocused=null;
+        if(homeLayer!=null){homeLayer.animate().cancel();root.removeView(homeLayer);}if(libraryLayer!=null){libraryLayer.animate().cancel();root.removeView(libraryLayer);}
+        homeTiles.clear();libraryTiles.clear();
+        homeLayer=new FrameLayout(this);libraryLayer=new FrameLayout(this);libraryLayer.setBackgroundColor(DesignSpec.BACKGROUND);
+        root.addView(homeLayer,new FrameLayout.LayoutParams(-1,-1));root.addView(libraryLayer,new FrameLayout.LayoutParams(-1,-1));
+        buildingLayer=homeLayer;tileViews=homeTiles;renderHome();homeHelper=helper;homeClock=clock;
+        buildingLayer=libraryLayer;tileViews=libraryTiles;renderLibrary();libraryHelper=helper;libraryClock=clock;
+        rebuilding=false;showPage(showLibrary,false);scheduleFocusRestore();
+    }
+    private void showPage(boolean showLibrary,boolean animate){
+        if(homeLayer==null||libraryLayer==null){render(showLibrary);return;}
+        boundaryFeedback.cancel();cancelHolds();View target=rememberedFocus(showLibrary);rebuilding=true;library=showLibrary;lastFocused=null;
+        homeLayer.animate().cancel();libraryLayer.animate().cancel();libraryLayer.animate().withEndAction(null);libraryLayer.setTranslationY(0);libraryLayer.setAlpha(1);
+        homeLayer.setDescendantFocusability(library?ViewGroup.FOCUS_BLOCK_DESCENDANTS:ViewGroup.FOCUS_AFTER_DESCENDANTS);
+        libraryLayer.setDescendantFocusability(library?ViewGroup.FOCUS_AFTER_DESCENDANTS:ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+        homeLayer.setVisibility(library?View.INVISIBLE:View.VISIBLE);libraryLayer.setVisibility(library?View.VISIBLE:View.INVISIBLE);
+        preview.setVisibility(library?View.INVISIBLE:View.VISIBLE);
+        if(library)preview.pause();else if(resumed)preview.resume();
+        tileViews=library?libraryTiles:homeTiles;helper=library?libraryHelper:homeHelper;clock=library?libraryClock:homeClock;
+        clock.setText(new SimpleDateFormat("HH:mm",Locale.CHINA).format(new Date()));
+        rebuilding=false;target.requestFocus();
+        if(library){revealLibrary(target,false);if(animate&&android.animation.ValueAnimator.areAnimatorsEnabled()){libraryLayer.setTranslationY(u(24));libraryLayer.animate().translationY(0).setDuration(240).start();}}
+        // The hardware preview stays at its original coordinates throughout the return transition.
+        else if(animate&&android.animation.ValueAnimator.areAnimatorsEnabled()){libraryLayer.setVisibility(View.VISIBLE);libraryLayer.animate().translationY(u(24)).alpha(0).setDuration(240).withEndAction(()->{if(!library){libraryLayer.setVisibility(View.INVISIBLE);libraryLayer.setTranslationY(0);libraryLayer.setAlpha(1);}}).start();}
+        if(library)libraryLayer.setAlpha(1);
+    }
+    private View rememberedFocus(boolean appsPage){
+        String tag=appsPage?libraryFocusTag:homeFocusTag;
+        View found=tag==null?null:(appsPage?libraryLayer:homeLayer).findViewWithTag(tag);
+        if(found!=null&&found.isFocusable())return found;
+        return appsPage?(libraryTiles.isEmpty()?back:libraryTiles.get(0)):preview;
+    }
+    private TextView gate(boolean up){
+        TextView hint=label(up?"↑ 首页":"↓ 全部应用",13.92f,0xff91a1b5);hint.setGravity(Gravity.CENTER);hint.setFocusable(true);hint.setId(View.generateViewId());hint.setBackground(bg(Color.TRANSPARENT,false));
+        hint.setOnFocusChangeListener((v,f)->{hint.setText(up?(f?"再按 ↑，返回首页":"↑ 首页"):(f?"再按 ↓，进入全部应用":"↓ 全部应用"));hint.setTextColor(f?DesignSpec.TEXT:0xff91a1b5);});
+        bind(hint,()->showPage(!up,true),null);return hint;
+    }
+    private void revealLibrary(View view,boolean animate){
+        int index=libraryTiles.indexOf(view);if(index<0||libraryGrid==null)return;
+        firstLibraryRow=FocusNavigation.firstVisibleRow(index,firstLibraryRow,2);
+        float y=-u(firstLibraryRow*(148.8f+DesignSpec.LIBRARY_GAP));libraryGrid.animate().cancel();
+        if(animate&&android.animation.ValueAnimator.areAnimatorsEnabled())libraryGrid.animate().translationY(y).setDuration(180).start();else libraryGrid.setTranslationY(y);
+        if(pageLabel!=null)pageLabel.setText(firstLibraryRow+2>=(apps.size()+4)/5?"已显示全部应用":"向下浏览更多应用");
     }
     private void renderHome(){
         clock=label("",44.64f,DesignSpec.TEXT);clock.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));clock.setLetterSpacing(-.043f);place(clock,38.4f,23.73f,112.3f,52.97f);
         place(label(new SimpleDateFormat("M月d日  EEEE",Locale.CHINA).format(new Date()),14.592f,0xffaab3c1),169.87f,39.93f,250,20.54f);
-        wifi=button("网络",this::showNetwork,null);icon((TextView)wifi,"wifi",21.12f,7.68f,DesignSpec.TEXT);headerStyle(wifi,"打开网络");place(wifi,739.24f,30.03f,86.39f,40.34f);
-        settings=button("设置",this::showSettings,this::openNativeSettings);icon((TextView)settings,"settings",21.12f,7.68f,DesignSpec.TEXT);headerStyle(settings,"打开设置 · 长按原生设置");place(settings,835.22f,30.03f,86.39f,40.34f);
-        preview=new ModernPreview(this,sources);preview.setId(View.generateViewId());preview.scale(unit);place(preview,DesignSpec.MARGIN,DesignSpec.HOME_Y,DesignSpec.PREVIEW_WIDTH,DesignSpec.HOME_HEIGHT);
+        wifi=button("网络",this::showNetwork,null);icon((TextView)wifi,"wifi",21.12f,7.68f,DesignSpec.TEXT);headerStyle(wifi,"打开网络");wifi.setTag("network");place(wifi,739.24f,32.2f,86.39f,36);
+        settings=button("设置",this::showSettings,this::openNativeSettings);icon((TextView)settings,"settings",21.12f,7.68f,DesignSpec.TEXT);headerStyle(settings,"打开设置 · 长按原生设置");settings.setTag("settings");place(settings,835.22f,32.2f,86.39f,36);
+        if(preview==null){preview=new ModernPreview(this,sources);preview.setId(View.generateViewId());preview.setTag("tv");root.addView(preview,0,new FrameLayout.LayoutParams(0,0));}
+        preview.scale(unit);FrameLayout.LayoutParams pp=new FrameLayout.LayoutParams(u(DesignSpec.PREVIEW_WIDTH),u(DesignSpec.HOME_HEIGHT));pp.leftMargin=u(DesignSpec.MARGIN)+(width-u(960))/2;pp.topMargin=u(DesignSpec.HOME_Y)+(height-u(540))/2;preview.setLayoutParams(pp);
         bind(preview,this::watch,this::showSources);
         preview.setOnFocusChangeListener((v,f)->{preview.focusStyle(f);if(f&&helper!=null)helper.setText("看电视 · 长按切换信号源");});
         List<App> home=new ArrayList<>();for(String pkg:pinned){App a=find(pkg);if(a!=null)home.add(a);if(home.size()==4)break;}
         for(int i=0;i<4;i++){App a=i<home.size()?home.get(i):null;
-            View card=a==null?button("添加应用",()->render(true),null):tile(a,true,()->launch(a),()->manage(a));
-            tileViews.add(card);place(card,DesignSpec.APP_X+(i%2)*(DesignSpec.APP_WIDTH+DesignSpec.APP_GAP),DesignSpec.HOME_Y+(i/2)*(DesignSpec.APP_HEIGHT+DesignSpec.APP_GAP),DesignSpec.APP_WIDTH,DesignSpec.APP_HEIGHT);
+            View card=a==null?button("添加应用",()->showPage(true,true),null):tile(a,true,()->launch(a),()->manage(a));
+            card.setTag(a==null?"add-"+i:a.pkg);tileViews.add(card);place(card,DesignSpec.APP_X+(i%2)*(DesignSpec.APP_WIDTH+DesignSpec.APP_GAP),DesignSpec.HOME_Y+(i/2)*(DesignSpec.APP_HEIGHT+DesignSpec.APP_GAP),DesignSpec.APP_WIDTH,DesignSpec.APP_HEIGHT);
         }
         helper=new DesignHelp(this,unit,12,DesignSpec.MUTED);helper.setText("看电视 · 长按切换信号源");place(helper,38.4f,491.05f,640,20.16f);
-        libraryButton=button("全部应用",()->{page=0;render(true);},null);((TextView)libraryButton).setTextSize(0,u(15.36f));icon((TextView)libraryButton,"grid-2x2",17.28f,7.68f,DesignSpec.TEXT);place(libraryButton,808.4f,482.65f,113.2f,36.96f);
-        preview.setNextFocusRightId(tileViews.get(0).getId());preview.setNextFocusUpId(wifi.getId());preview.setNextFocusDownId(libraryButton.getId());
-        wifi.setNextFocusDownId(preview.getId());wifi.setNextFocusRightId(settings.getId());settings.setNextFocusLeftId(wifi.getId());settings.setNextFocusDownId(tileViews.get(1).getId());
-        for(int i=0;i<4;i++){View card=tileViews.get(i);card.setNextFocusLeftId(i%2==0?preview.getId():tileViews.get(i-1).getId());card.setNextFocusRightId(i%2==0?tileViews.get(i+1).getId():card.getId());card.setNextFocusUpId(i<2?(i==0?wifi:settings).getId():tileViews.get(i-2).getId());card.setNextFocusDownId(i<2?tileViews.get(i+2).getId():libraryButton.getId());}
-        libraryButton.setNextFocusUpId(tileViews.get(3).getId());libraryButton.setNextFocusLeftId(preview.getId());
-        preview.requestFocus();if(resumed)preview.resume();
+        libraryButton=gate(false);place(libraryButton,701.6f,482.65f,220,36.96f);
     }
     private void renderLibrary(){
-        back=button("",()->{render(false);libraryButton.requestFocus();},null);back.setPadding(0,0,0,0);((TextView)back).setCompoundDrawables(DesignAssets.icon("arrow-left",u(22.08f),DesignSpec.TEXT),null,null,null);back.setPadding(u(3.84f),0,0,0);headerStyle(back,"返回首页");place(back,38.4f,35.33f,29.76f,29.76f);
-        place(label("全部应用",29.76f,DesignSpec.TEXT),96.96f,29.5f,430,41.4f);
+        place(label("全部应用",29.76f,DesignSpec.TEXT),38.4f,29.5f,430,41.4f);
         clock=label("",24,DesignSpec.TEXT);clock.setGravity(Gravity.RIGHT|Gravity.CENTER_VERTICAL);place(clock,790,33.3f,131.6f,33.8f);
-        place(label("选择应用，按确定打开",12.96f,0xffa0acbb),38.4f,91.8f,650,18);
-        int pages=Math.max(1,(apps.size()+9)/10);page=Math.min(page,pages-1);
-        for(int i=page*10;i<Math.min(apps.size(),page*10+10);i++){App a=apps.get(i);int cell=i-page*10;View v=tile(a,false,()->launch(a),()->manage(a));tileViews.add(v);place(v,38.4f+(cell%5)*(DesignSpec.LIBRARY_WIDTH+DesignSpec.LIBRARY_GAP),DesignSpec.LIBRARY_Y+(cell/5)*(DesignSpec.LIBRARY_HEIGHT+DesignSpec.LIBRARY_GAP),DesignSpec.LIBRARY_WIDTH,DesignSpec.LIBRARY_HEIGHT);}
+        back=gate(true);place(back,288,86.4f,384,36.5f);
+        FrameLayout viewport=new FrameLayout(this);viewport.setClipChildren(true);viewport.setClipToPadding(true);place(viewport,38.4f,135,883.2f,334.8f);
+        libraryGrid=new FrameLayout(this);libraryGrid.setClipChildren(false);viewport.addView(libraryGrid,new FrameLayout.LayoutParams(-1,u(Math.max(1,(apps.size()+4)/5)*(148.8f+DesignSpec.LIBRARY_GAP))));
+        for(int i=0;i<apps.size();i++){App a=apps.get(i);View v=tile(a,false,()->launch(a),()->manage(a));v.setTag(a.pkg);tileViews.add(v);FrameLayout.LayoutParams lp=new FrameLayout.LayoutParams(u(DesignSpec.LIBRARY_WIDTH),u(148.8f));lp.leftMargin=u((i%5)*(DesignSpec.LIBRARY_WIDTH+DesignSpec.LIBRARY_GAP));lp.topMargin=u((i/5)*(148.8f+DesignSpec.LIBRARY_GAP));libraryGrid.addView(v,lp);}
         if(apps.isEmpty())place(label("暂无可打开的应用",20,0xffc3ccd8),38.4f,180,700,70);
         helper=new DesignHelp(this,unit,12,DesignSpec.MUTED);helper.setText("打开 · 长按管理");place(helper,38.4f,491.05f,620,20.16f);
-        pageLabel=label((page+1)+" / "+pages,11.52f,0xffaab6c5);pageLabel.setGravity(Gravity.RIGHT|Gravity.CENTER_VERTICAL);place(pageLabel,790,491.05f,131.6f,20.16f);
-        for(int i=0;i<tileViews.size();i++){View v=tileViews.get(i);v.setNextFocusLeftId(i%5>0?tileViews.get(i-1).getId():v.getId());v.setNextFocusRightId(i%5<4&&i+1<tileViews.size()?tileViews.get(i+1).getId():v.getId());v.setNextFocusUpId(i>=5?tileViews.get(i-5).getId():back.getId());v.setNextFocusDownId(i+5<tileViews.size()?tileViews.get(i+5).getId():v.getId());}
-        back.setNextFocusDownId(tileViews.isEmpty()?back.getId():tileViews.get(0).getId());
-        int focus=0;if(returnPackage!=null)for(int i=0;i<tileViews.size();i++)if(apps.get(page*10+i).pkg.equals(returnPackage))focus=i;
-        if(!tileViews.isEmpty())tileViews.get(focus).requestFocus();else back.requestFocus();
+        pageLabel=label("",11.52f,0xff91a1b5);pageLabel.setGravity(Gravity.RIGHT|Gravity.CENTER_VERTICAL);place(pageLabel,701.6f,491.05f,220,20.16f);
+        firstLibraryRow=Math.min(firstLibraryRow,Math.max(0,(apps.size()+4)/5-2));
     }
+
     private View tile(App app,boolean home,Runnable click,Runnable hold){
         FrameLayout card=new FrameLayout(this);card.setFocusable(true);card.setId(View.generateViewId());card.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
-        int brandColor=DesignAssets.brandColor(app.pkg);if(DesignAssets.brand(app.pkg)==null&&!DesignAssets.installedBrand(app.pkg))brandColor=utilityColor(utilityIcon(app.pkg));int base=home?brandColor:DesignSpec.CARD;card.setBackground(bg(base,false));
+        int brandColor=DesignAssets.brandColor(app.pkg);if(DesignAssets.brand(app.pkg)==null&&!DesignAssets.installedBrand(app.pkg))brandColor=utilityColor(utilityIcon(app.pkg));card.setBackground(new ClearWaterDrawable(unit,DesignSpec.CORNER,home?0x0eb9cfe6:0x09b9cfe6));
         float cardWidth=home?DesignSpec.APP_WIDTH:DesignSpec.LIBRARY_WIDTH;
-        float boxSize=home?73.92f:62.4f,top=home?23.21f:33.4f;
+        float boxSize=home?73.92f:62.4f,top=home?23.21f:28.8f;
         FrameLayout iconBox=new FrameLayout(this);
-        if(!home){GradientDrawable ib=new GradientDrawable();ib.setColor(brandColor);ib.setCornerRadius(u(14.88f));iconBox.setBackground(ib);}
+        GradientDrawable ib=new GradientDrawable();ib.setColor(brandColor);ib.setCornerRadius(u(boxSize*.238461538f));iconBox.setBackground(ib);
         FrameLayout.LayoutParams boxParams=new FrameLayout.LayoutParams(u(boxSize),u(boxSize));boxParams.leftMargin=u((cardWidth-boxSize)/2);boxParams.topMargin=u(top);card.addView(iconBox,boxParams);
         String asset=DesignAssets.brand(app.pkg);if(asset==null&&!DesignAssets.installedBrand(app.pkg))asset=utilityIcon(app.pkg);
-        float iconSize=home?("bilibili".equals(asset)?67.2f:73.92f):(DesignAssets.brand(app.pkg)!=null||DesignAssets.installedBrand(app.pkg)?43.2f:38.4f);
+        float iconSize=boxSize*(1-2*.153846154f);
         ImageView image=new ImageView(this);image.setScaleType(ImageView.ScaleType.FIT_CENTER);image.setImageDrawable(asset==null?app.icon:DesignAssets.icon(asset,u(iconSize),0xffffffff));
         FrameLayout.LayoutParams ip=new FrameLayout.LayoutParams(u(iconSize),u(iconSize),Gravity.CENTER);iconBox.addView(image,ip);
         TextView name=label(app.label,home?16.32f:13.44f,DesignSpec.TEXT);name.setGravity(Gravity.CENTER);name.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));name.setSingleLine(true);name.setEllipsize(android.text.TextUtils.TruncateAt.END);
         FrameLayout.LayoutParams np=new FrameLayout.LayoutParams(u(cardWidth-21.12f),u(home?22.7f:18.7f));np.leftMargin=u(10.56f);np.topMargin=u(top+boxSize+(home?11.52f:10.56f));card.addView(name,np);
-        card.setContentDescription(app.label);card.setOnFocusChangeListener((v,f)->{v.setBackground(bg(f?DesignSpec.selectedBrand(base):base,false));if(f&&helper!=null)helper.setText("打开 · 长按管理");});bind(card,click,hold);return card;
+        card.setContentDescription(app.label);card.setOnFocusChangeListener((v,f)->{if(f&&helper!=null)helper.setText("打开 · 长按管理");});bind(card,click,hold);return card;
     }
     private String utilityIcon(String pkg){
         String name=pkg.toLowerCase(Locale.ROOT);
@@ -178,7 +223,7 @@ public class MainActivity extends Activity {
         return null;
     }
     private int utilityColor(String icon){if(icon==null)return 0xff3f5568;switch(icon){case "play":return 0xff346b9f;case "folder":return 0xffb18a3d;case "cast":return 0xff39848f;case "grid-2x2":case "timer":return 0xff7566a2;case "settings":return 0xff617387;case "bluetooth":case "calendar-days":return 0xff3a699c;case "shopping-bag":return 0xffb18a3d;default:return 0xff3f5568;}}
-    private void headerStyle(View v,String hint){v.setBackground(bg(0,false));v.setOnFocusChangeListener((view,f)->{view.setBackground(bg(f?DesignSpec.FOCUS:0,false));if(f&&helper!=null)helper.setText(hint);});}
+    private void headerStyle(View v,String hint){v.setBackground(new ClearWaterDrawable(unit,999,Color.TRANSPARENT));v.setOnFocusChangeListener((view,f)->{if(f&&helper!=null)helper.setText(hint);});}
     private void icon(TextView v,String kind,float size,float gap,int color){v.setCompoundDrawables(DesignAssets.icon(kind,u(size),color),null,null,null);v.setCompoundDrawablePadding(u(gap));}
     private void loadApps(){
         apps.clear();PackageManager pm=getPackageManager();Set<String> seen=new HashSet<>();Set<String> excluded=new HashSet<>(Arrays.asList(getResources().getStringArray(R.array.library_excluded_apps)));excluded.add(getPackageName());excluded.add("lab.s55.preview");excluded.add("com.mitv.tvhome");
@@ -195,7 +240,7 @@ public class MainActivity extends Activity {
         if(!prefs.contains("library_order_v2")){apps.sort(Comparator.comparingInt(a->{int i=pinned.indexOf(a.pkg);return i<0?999:i;}));}
     }
     private App find(String pkg){for(App a:apps)if(a.pkg.equals(pkg))return a;return null;}
-    private void launch(App a){returnPackage=a.pkg;open(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setComponent(a.component).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));}
+    private void launch(App a){open(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setComponent(a.component).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));}
     private void open(Intent i){try{startActivity(i);}catch(RuntimeException e){toast("无法打开，请检查应用或系统支持");}}
     private void openNativeSettings(){Intent i=SystemSettings.vendorIntent(this);open(i==null?SystemSettings.intent(this,Settings.ACTION_SETTINGS):i);}
     private void watch(){SourceCatalog.Source s=sources.selected();if(s==null){showSources();return;}preview.pause();try{startActivity(sources.playback(s));}catch(RuntimeException e){toast("此电视暂不支持直接播放，请从系统信号源打开");preview.resume();}}
@@ -205,14 +250,14 @@ public class MainActivity extends Activity {
         if(rows.isEmpty()){toast("没有发现可用信号源");return;}
         menu("选择信号源",rows,i->{sources.select(list.get(i));preview.refresh();preview.requestFocus();},selected,list);
     }
-    private void manage(App app){returnPackage=app.pkg;List<String> entries=new ArrayList<>();boolean onHome=pinned.contains(app.pkg);entries.add(onHome?"从首页移除":"添加到首页");entries.add("调整应用排序");if(onHome)entries.add("调整首页位置");
+    private void manage(App app){List<String> entries=new ArrayList<>();boolean onHome=pinned.contains(app.pkg);entries.add(onHome?"从首页移除":"添加到首页");entries.add("调整应用排序");if(onHome)entries.add("调整首页位置");
         menu(app.label,entries,i->{if(i==0){if(onHome){pinned.remove(app.pkg);savePins();render(library);}else pin(app);}else if(i==1)reorder(app,false);else reorder(app,true);},0);
     }
     private void pin(App a){if(pinned.size()<4){pinned.add(a.pkg);savePins();render(library);return;}List<String> rows=new ArrayList<>();for(String p:pinned){App old=find(p);rows.add("替换 "+(old==null?p:old.label));}menu("首页已满，选择替换",rows,i->{pinned.set(i,a.pkg);savePins();render(library);},0);}
     private void savePins(){prefs.edit().putString("pinned_v2",String.join(",",pinned)).apply();}
     private void reorder(App a,boolean home){List<String> rows=new ArrayList<>(),ids=new ArrayList<>();if(home)ids.addAll(pinned);else for(App x:apps)ids.add(x.pkg);
         for(int i=0;i<ids.size();i++){App x=find(ids.get(i));rows.add("第 "+(i+1)+" 位 · "+(x==null?ids.get(i):x.label));}
-        menu(home?"移动到首页位置":"移动到应用位置",rows,i->{ids.remove(a.pkg);ids.add(Math.min(i,ids.size()),a.pkg);if(home){pinned.clear();pinned.addAll(ids);savePins();}else prefs.edit().putString("library_order_v2",String.join(",",ids)).apply();loadApps();if(!home)page=Math.max(0,ids.indexOf(a.pkg)/10);render(library);},Math.max(0,ids.indexOf(a.pkg)));
+        menu(home?"移动到首页位置":"移动到应用位置",rows,i->{ids.remove(a.pkg);ids.add(Math.min(i,ids.size()),a.pkg);if(home){pinned.clear();pinned.addAll(ids);savePins();}else prefs.edit().putString("library_order_v2",String.join(",",ids)).apply();loadApps();if(!home)libraryFocusTag=a.pkg;render(library);},Math.max(0,ids.indexOf(a.pkg)));
     }
     private void refreshSourceIndicators(){
         for(Map.Entry<String,ImageView> entry:sourceRows.entrySet()){
@@ -227,15 +272,15 @@ public class MainActivity extends Activity {
     private void menu(String title,List<String> rows,java.util.function.IntConsumer select,int initial){menu(title,rows,select,initial,null);}
     private void menu(String title,List<String> rows,java.util.function.IntConsumer select,int initial,List<SourceCatalog.Source> inputList){
         cancelHolds();dismissModal();sourceRows.clear();Dialog d=new Dialog(this);modal=d;d.requestWindowFeature(Window.FEATURE_NO_TITLE);
-        LinearLayout panel=new LinearLayout(this);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(u(23.04f),u(23.04f),u(23.04f),u(23.04f));GradientDrawable panelBg=bg(DesignSpec.PANEL,false);panelBg.setCornerRadius(u(15.36f));panel.setBackground(panelBg);
+        LinearLayout panel=new LinearLayout(this);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(u(23.04f),u(23.04f),u(23.04f),u(23.04f));GradientDrawable panelBg=new GradientDrawable(GradientDrawable.Orientation.TL_BR,new int[]{0xf026313f,0xf019222e});panelBg.setCornerRadius(u(15.36f));panel.setBackground(panelBg);
         String headingIcon=title.equals("设置")?"settings":title.equals("选择信号源")?"monitor":title.equals("网络")?"wifi":"grid-2x2";
         TextView heading=label(title,21.6f,DesignSpec.TEXT);heading.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));icon(heading,headingIcon,23.04f,8.64f,0xffcfdae6);panel.addView(heading,new LinearLayout.LayoutParams(-1,u(30.27f)));
         String subtitle=inputList!=null?"绿色图标表示已连接；勾号表示当前选择。":title.equals("网络")?(networkConnected()?"网络已连接":"网络未连接"):"常用功能，简单直达。";
-        TextView sub=label(subtitle,10.368f,0xff8fa0b4);LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(-1,u(14.05f));sp.topMargin=u(6.72f);sp.bottomMargin=u(16.32f);panel.addView(sub,sp);
+        TextView sub=label(subtitle,10.368f,0xffb6c3d2);LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(-1,u(14.05f));sp.topMargin=u(6.72f);sp.bottomMargin=u(16.32f);panel.addView(sub,sp);
         ScrollView scroll=new ScrollView(this);scroll.setFillViewport(false);scroll.setVerticalScrollBarEnabled(false);LinearLayout choices=new LinearLayout(this);choices.setOrientation(LinearLayout.VERTICAL);scroll.addView(choices);
         SourceCatalog.Source selectedSource=sources.selected();List<View> buttons=new ArrayList<>();
         for(int i=0;i<rows.size();i++){
-            final int index=i;LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);row.setPadding(u(11.52f),0,u(11.52f),0);row.setFocusable(true);row.setId(View.generateViewId());row.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);row.setBackground(bg(DesignSpec.ROW,false));row.setOnFocusChangeListener((v,f)->v.setBackground(bg(f?DesignSpec.FOCUS:DesignSpec.ROW,false)));bind(row,()->{d.dismiss();select.accept(index);},null);
+            final int index=i;LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);row.setPadding(u(11.52f),0,u(11.52f),0);row.setFocusable(true);row.setId(View.generateViewId());row.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);row.setBackground(new ClearWaterDrawable(unit,DesignSpec.CORNER,Color.TRANSPARENT));bind(row,()->{d.dismiss();select.accept(index);},null);
             String rowIcon=inputList!=null?(rows.get(i).startsWith("AV")?"plug":"monitor"):title.equals("设置")?(i==0?"monitor":i==1?"sliders-horizontal":"grid-2x2"):title.equals("网络")?(i==0?"wifi":"sliders-horizontal"):rows.get(i).contains("位置")||rows.get(i).contains("排序")?"arrow-up-down":"pin";
             ImageView left=new ImageView(this);left.setImageDrawable(DesignAssets.icon(rowIcon,u(18.24f),0xffb8c7d9));row.addView(left,new LinearLayout.LayoutParams(u(18.24f),u(18.24f)));
             TextView text=label(rows.get(i),16.32f,DesignSpec.TEXT);text.setSingleLine(true);text.setEllipsize(android.text.TextUtils.TruncateAt.END);LinearLayout.LayoutParams tp=new LinearLayout.LayoutParams(0,-1,1);tp.leftMargin=u(9.6f);row.addView(text,tp);
@@ -248,13 +293,27 @@ public class MainActivity extends Activity {
         }
         if(inputList!=null)refreshSourceIndicators();
         int scrollHeight=u(Math.min(274,rows.size()*40.58f+Math.max(0,rows.size()-1)*6.24f));panel.addView(scroll,new LinearLayout.LayoutParams(-1,scrollHeight));
-        DesignHelp tip=new DesignHelp(this,unit,10.08f,0xff93a3b5);tip.setText("确认选择 · 返回取消");LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(-1,u(20.16f));hp.topMargin=u(15.36f);panel.addView(tip,hp);
-        d.setOnKeyListener((dialog,key,event)->handleMenuKey(event));
+        LinearLayout footer=new LinearLayout(this);footer.setGravity(Gravity.CENTER_VERTICAL);
+        DesignHelp tip=new DesignHelp(this,unit,10.08f,0xffb6c3d2);tip.setText("确认选择 · 返回取消");footer.addView(tip,new LinearLayout.LayoutParams(0,u(32.64f),1));
+        TextView dismiss=button("返回",d::dismiss,null);dismiss.setTextSize(0,u(12.48f));headerStyle(dismiss,"返回");footer.addView(dismiss,new LinearLayout.LayoutParams(u(60),u(32.64f)));buttons.add(dismiss);
+        LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(-1,u(32.64f));hp.topMargin=u(15.36f);panel.addView(footer,hp);
+        d.setOnKeyListener((dialog,key,event)->{
+            if(handleMenuKey(event))return true;
+            int direction=BoundaryFeedback.direction(key);if(direction==0)return false;
+            View current=d.getCurrentFocus();int index=buttons.indexOf(current);if(index<0)return false;
+            int next=index+(direction==View.FOCUS_UP?-1:direction==View.FOCUS_DOWN?1:0);
+            if(event.getAction()==KeyEvent.ACTION_DOWN&&event.getRepeatCount()==0){
+                if(next>=0&&next<buttons.size()&&next!=index)buttons.get(next).requestFocus();
+                else boundaryFeedback.pulse(current,key,unit);
+            }
+            return true;
+        });
         d.setContentView(panel);d.setOnDismissListener(x->{
+            boundaryFeedback.cancel();
             // Dialog rows belong to a separate window. Release their Hold objects when it closes.
             for(java.util.Iterator<Hold> it=holds.iterator();it.hasNext();){Hold h=it.next();if(buttons.contains(h.view)){h.cancel();it.remove();}}
             scheduleFocusRestore();if(modal==d){modal=null;sourceRows.clear();}cancelHolds();if(Build.VERSION.SDK_INT>=31)root.setRenderEffect(null);root.post(()->{if(helper!=null)helper.setText(library?"打开 · 长按管理":preview!=null&&preview.hasFocus()?"看电视 · 长按切换信号源":"选择");});});
-        Window w=d.getWindow();if(w!=null){w.setBackgroundDrawableResource(android.R.color.transparent);w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);w.setDimAmount(.66f);}
+        Window w=d.getWindow();if(w!=null){w.setBackgroundDrawableResource(android.R.color.transparent);w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);w.setDimAmount(.48f);}
         if(Build.VERSION.SDK_INT>=31)root.setRenderEffect(RenderEffect.createBlurEffect(u(5.76f),u(5.76f),Shader.TileMode.CLAMP));
         d.show();w.setLayout(u(422.4f),-2);buttons.get(Math.min(initial,buttons.size()-1)).requestFocus();
     }
@@ -293,12 +352,25 @@ public class MainActivity extends Activity {
         boolean navigation=key==KeyEvent.KEYCODE_DPAD_UP||key==KeyEvent.KEYCODE_DPAD_DOWN||key==KeyEvent.KEYCODE_DPAD_LEFT||key==KeyEvent.KEYCODE_DPAD_RIGHT;
         // Recover on the first arrow without immediately moving away from the restored card.
         if(navigation&&e.getAction()==KeyEvent.ACTION_DOWN&&restoreFocus())return true;
-        if(library&&(e.getKeyCode()==KeyEvent.KEYCODE_DPAD_DOWN||e.getKeyCode()==KeyEvent.KEYCODE_DPAD_UP)){
-            int index=tileViews.indexOf(getCurrentFocus());boolean next=e.getKeyCode()==KeyEvent.KEYCODE_DPAD_DOWN&&index>=5&&page*10+10<apps.size();boolean prev=e.getKeyCode()==KeyEvent.KEYCODE_DPAD_UP&&index>=0&&index<5&&page>0;
-            if(next||prev){if(e.getAction()==KeyEvent.ACTION_DOWN&&e.getRepeatCount()==0){int col=index%5;page+=next?1:-1;returnPackage=null;render(true);int focus=Math.min(tileViews.size()-1,next?col:col+5);if(focus>=0)tileViews.get(focus).requestFocus();}return true;}
-        }
+        if(navigation){if(e.getAction()==KeyEvent.ACTION_DOWN&&e.getRepeatCount()==0){cancelHolds();navigate(key);}return true;}
         return super.dispatchKeyEvent(e);
     }
-    @Override public void onBackPressed(){if(modal!=null){dismissModal();return;}if(library){render(false);libraryButton.requestFocus();}else if(preview!=null)preview.requestFocus();}
+    private void navigate(int key){
+        View current=getCurrentFocus();int direction=key==KeyEvent.KEYCODE_DPAD_UP?FocusNavigation.UP:key==KeyEvent.KEYCODE_DPAD_DOWN?FocusNavigation.DOWN:key==KeyEvent.KEYCODE_DPAD_LEFT?FocusNavigation.LEFT:FocusNavigation.RIGHT;
+        if(current==(library?back:libraryButton)){
+            if(direction==(library?FocusNavigation.UP:FocusNavigation.DOWN)){showPage(!library,true);return;}
+            if(direction==(library?FocusNavigation.DOWN:FocusNavigation.UP)){rememberedFocus(library).requestFocus();return;}
+            boundaryFeedback.pulse(current,key,unit);return;
+        }
+        int index=tileViews.indexOf(current);View target=current;
+        if(library){if(index<0)return;int next=FocusNavigation.grid(index,tileViews.size(),5,direction);target=next==FocusNavigation.GATE?back:tileViews.get(next);}
+        else {
+            int origin=current==preview?FocusNavigation.TV:current==wifi?FocusNavigation.NETWORK:current==settings?FocusNavigation.SETTINGS:index;
+            int next=FocusNavigation.home(origin,direction);
+            target=next==FocusNavigation.TV?preview:next==FocusNavigation.NETWORK?wifi:next==FocusNavigation.SETTINGS?settings:next==FocusNavigation.GATE?libraryButton:homeTiles.get(next);
+        }
+        if(target==current)boundaryFeedback.pulse(current,key,unit);else target.requestFocus();
+    }
+    @Override public void onBackPressed(){if(modal!=null){dismissModal();return;}if(library)showPage(false,true);else if(getCurrentFocus()==libraryButton)rememberedFocus(false).requestFocus();else if(preview!=null)preview.requestFocus();}
     private static final class App{final String pkg,label;final ComponentName component;final Drawable icon;App(String p,String l,ComponentName c,Drawable i){pkg=p;label=l;component=c;icon=i;}}
 }

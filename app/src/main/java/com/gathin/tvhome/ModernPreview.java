@@ -38,7 +38,7 @@ final class ModernPreview extends FrameLayout {
         connecting();setOnFocusChangeListener((v,f)->focusStyle(f));
     }
     private TextView text(String s,int size){TextView t=new TextView(getContext());t.setText(s);t.setTextColor(Color.WHITE);t.setTextSize(size);t.setIncludeFontPadding(false);return t;}
-    void focusStyle(boolean focused){setBackgroundColor(focused?DesignSpec.FOCUS:DesignSpec.PREVIEW);edge.invalidate();}
+    void focusStyle(boolean focused){setBackgroundColor(DesignSpec.PREVIEW);edge.invalidate();}
     void scale(float u){unit=u;caption.setTextSize(0,16.512f*u);sourceLabel.setTextSize(0,12.96f*u);status.setTextSize(0,18.24f*u);detail.setTextSize(0,10.56f*u);detail.setLineSpacing(7.68f*u,1);
         mute.setPadding(Math.round(6.96f*u),Math.round(6.96f*u),Math.round(6.96f*u),Math.round(6.96f*u));mute.setImageDrawable(DesignAssets.icon("volume-x",Math.round(15.84f*u),Color.WHITE));
         caption.setCompoundDrawables(DesignAssets.icon("monitor",Math.round(18.72f*u),DesignSpec.TEXT),null,null,null);caption.setCompoundDrawablePadding(Math.round(7.68f*u));
@@ -99,7 +99,13 @@ final class ModernPreview extends FrameLayout {
         @Override protected void onDraw(Canvas c){float inset=0,r=14.4f*unit;RectF bounds=new RectF(inset,inset,getWidth()-inset,getHeight()-inset);
             outside.reset();outside.setFillType(Path.FillType.EVEN_ODD);outside.addRect(0,0,getWidth(),getHeight(),Path.Direction.CW);outside.addRoundRect(bounds,r,r,Path.Direction.CW);
             paint.setStyle(Paint.Style.FILL);paint.setColor(DesignSpec.BACKGROUND);c.drawPath(outside,paint);
-            
+            if(ModernPreview.this.hasFocus()){
+                float footerTop=Math.round(getWidth()*9f/16f);
+                ClearWaterDrawable.drawWater(c,new RectF(0,footerTop,getWidth(),getHeight()),r,unit,paint,new Path());
+                paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(unit);
+                paint.setShader(new LinearGradient(0,0,getWidth()*.65f,0,new int[]{0x00effaff,0x9eeffaff,0x30def2ff,0x00def2ff},new float[]{0,.2f,.55f,1},Shader.TileMode.CLAMP));
+                c.save();c.clipRect(0,0,getWidth(),getHeight()*.35f);RectF reflection=new RectF(bounds);reflection.inset(unit,unit);c.drawRoundRect(reflection,r,r,paint);c.restore();paint.setShader(null);paint.setStyle(Paint.Style.FILL);
+            }
         }
     }
 }

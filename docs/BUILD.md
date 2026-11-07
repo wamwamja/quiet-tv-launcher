@@ -29,4 +29,4 @@ release 当前使用本机 Android debug 签名并启用 R8。它适合开发验
 
 ## 源码版本
 
-保留原稳定版本 versionCode 11 / versionName 3.2；仓库基线标签为 `v0.1.0-baseline`，两者用途不同。后续 APK 更新应递增 versionCode。
+当前版本 versionCode 13 / versionName 3.3.0。仓库基线标签 `v0.1.0-baseline` 用于历史源码定位；后续 APK 更新应递增 versionCode。
